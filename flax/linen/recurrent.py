@@ -31,7 +31,7 @@ from flax.linen.linear import Conv
 from flax.linen.linear import default_kernel_init
 from flax.linen.linear import Dense
 from flax.linen.linear import PrecisionLike
-from flax.linen.module import compact
+from flax.linen.module import compact, nowrap
 from flax.linen.module import Module
 from jax import numpy as jnp
 from jax import random
@@ -40,6 +40,7 @@ from flax.core import lift
 from flax.core.frozen_dict import FrozenDict
 from flax.linen import transforms
 import jax
+import jax.experimental.rnn
 
 A = TypeVar('A')
 PRNGKey = Any
@@ -512,6 +513,121 @@ class ConvLSTMCell(RNNCellBase):
     key1, key2 = random.split(rng)
     mem_shape = batch_dims + size
     return init_fn(key1, mem_shape), init_fn(key2, mem_shape)
+
+class CudnnLSTM(Module):
+  features: int
+  num_layers: int = 1
+  dropout: float = 0.0
+  bidirectional: bool = False
+  deterministic: bool = True
+  time_major: bool = False
+
+  @compact
+  def __call__(
+      self,
+      inputs: Array,
+      seq_lengths: Optional[Array] = None,
+      return_carry: Optional[bool] = None,
+      initial_states: Optional[Tuple[Array, Array]] = None,
+      use_cudnn: bool = True,
+      # overloads
+      dropout: Optional[float] = None,
+      deterministic: Optional[bool] = None,
+      bidirectional: Optional[bool] = None,
+      time_major: Optional[bool] = None,
+  ) -> Union[Array, Tuple[Array, Carry]]:
+
+    if time_major is None:
+      time_major = self.time_major
+
+    if bidirectional is None:
+      bidirectional = self.bidirectional
+
+    if deterministic is None:
+      deterministic = self.deterministic
+
+    if deterministic:
+      dropout = 0.0
+    elif dropout is None:
+      dropout = self.dropout
+
+    input_shape = inputs.shape
+
+    if len(input_shape) <= 1:
+      raise ValueError('Input must have at least 2 dimensions.')
+    elif len(input_shape) == 2:
+      inputs = jnp.expand_dims(inputs, axis=0)
+    else:
+      if time_major:
+        inputs = jnp.swapaxes(inputs, 0, -2)
+      if len(input_shape) > 3:
+        inputs = inputs.reshape(-1, *input_shape[-2:])
+
+    if jax.devices()[0].platform != 'gpu':
+      use_cudnn = False
+
+    batch_size = inputs.shape[0]
+    input_size = inputs.shape[2]
+    num_directions = 2 if self.bidirectional else 1
+
+    weights = self.param(
+        'weights',
+        jax.experimental.rnn.init_lstm_weight,
+        input_size, self.features,
+        self.num_layers, self.bidirectional,
+    )
+
+    if initial_states is None:
+      h_0 = jnp.zeros(
+          (num_directions * self.num_layers, batch_size, self.features),
+          jnp.float32,
+      )
+      c_0 = jnp.zeros(
+          (num_directions * self.num_layers, batch_size, self.features),
+          jnp.float32,
+      )
+    else:
+      h_0, c_0 = initial_states
+
+    if seq_lengths is None:
+      seq_lengths = jnp.full((batch_size,), inputs.shape[1], dtype=jnp.int32)
+
+    y: jax.Array
+    if use_cudnn:
+      y, h, c = jax.experimental.rnn.lstm( # type: ignore[misc]
+          x=inputs, h_0=h_0, c_0=c_0, weights=weights,
+          seq_lengths=seq_lengths, input_size=input_size,
+          hidden_size=self.features, num_layers=self.num_layers,
+          dropout=dropout, bidirectional=self.bidirectional,
+      )
+    else:
+      W_ih, W_hh, b_ih, b_hh = self.unpack_weights(weights, input_size)
+      y, h, c = jax.experimental.rnn.lstm_ref(
+        x=inputs, h_0=h_0, c_0=c_0, W_ih=W_ih, W_hh=W_hh,
+        b_ih=b_ih, b_hh=b_hh, seq_lengths=seq_lengths,
+        input_size=input_size, hidden_size=self.features,
+        num_layers=self.num_layers, dropout=dropout,
+        bidirectional=self.bidirectional,
+      )
+
+    if time_major and len(input_shape) >= 3:
+      y = jnp.swapaxes(y, 0, -2)
+
+    if len(input_shape) != 3:
+        y = y.reshape(*input_shape[:-1], y.shape[-1])
+
+    if return_carry:
+      return y, (h, c)
+
+    return y
+
+  @nowrap
+  def unpack_weights(
+    self, weights: Array, input_size: int
+  ) -> Tuple[Dict[int, Array], Dict[int, Array], Dict[int, Array], Dict[int, Array]]:
+    return jax.experimental.rnn.unpack_lstm_weights(
+      weights, input_size, self.features, self.num_layers, self.bidirectional,
+    )
 
 class RNN(Module):
   """The ``RNN`` module takes any :class:`RNNCellBase` instance and applies it over a sequence
