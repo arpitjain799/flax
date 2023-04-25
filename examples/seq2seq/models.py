@@ -35,6 +35,7 @@ class DecoderLSTMCell(nn.RNNCellBase):
     teacher_force: See docstring on Seq2seq module.
     vocab_size: Size of the vocabulary.
   """
+  features: int
   teacher_force: bool
   vocab_size: int
 
@@ -44,7 +45,7 @@ class DecoderLSTMCell(nn.RNNCellBase):
     lstm_state, last_prediction = carry
     if not self.teacher_force:
       x = last_prediction
-    lstm_state, y = nn.LSTMCell()(lstm_state, x)
+    lstm_state, y = nn.LSTMCell(self.features)(lstm_state, x)
     logits = nn.Dense(features=self.vocab_size)(y)
     # Sample the predicted token using a categorical distribution over the
     # logits.
@@ -55,6 +56,10 @@ class DecoderLSTMCell(nn.RNNCellBase):
         predicted_token, self.vocab_size, dtype=jnp.float32)
 
     return (lstm_state, prediction), (logits, prediction)
+
+  @property
+  def time_axis(self) -> int:
+    return -2
 
 
 class Seq2seq(nn.Module):
@@ -96,8 +101,8 @@ class Seq2seq(nn.Module):
       encoding format).
     """
     # Encode inputs.
-    encoder = nn.RNN(nn.LSTMCell(), self.hidden_size, return_carry=True, name='encoder')
-    decoder = nn.RNN(DecoderLSTMCell(self.teacher_force, self.vocab_size), decoder_inputs.shape[-1],
+    encoder = nn.RNN(nn.LSTMCell(self.hidden_size), return_carry=True, name='encoder')
+    decoder = nn.RNN(DecoderLSTMCell(decoder_inputs.shape[-1], self.teacher_force, self.vocab_size),
       split_rngs={'params': False, 'lstm': True}, name='decoder')
 
     segmentation_mask = self.get_segmentation_mask(encoder_inputs)

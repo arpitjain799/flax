@@ -36,7 +36,7 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 15
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, return_carry=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), return_carry=True)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
     variables = rnn.init(jax.random.PRNGKey(0), xs)
@@ -57,7 +57,7 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 15
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, return_carry=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), return_carry=True)
 
     xs = jnp.ones((*batch_dims, seq_len, channels_in))
     variables = rnn.init(jax.random.PRNGKey(0), xs)
@@ -78,7 +78,7 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 15
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, unroll=10, return_carry=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), unroll=10, return_carry=True)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
     variables = rnn.init(jax.random.PRNGKey(0), xs)
@@ -99,7 +99,7 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 15
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, time_major=True, return_carry=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), time_major=True, return_carry=True)
 
     xs = jnp.ones((seq_len, batch_size, channels_in))
     variables = rnn.init(jax.random.PRNGKey(0), xs)
@@ -130,7 +130,6 @@ class RNNTest(absltest.TestCase):
 
     rnn = nn.RNN(
       nn.ConvLSTMCell(channels_out, kernel_size),
-      cell_size=(*image_size, channels_out),
     )
 
     xs = jnp.ones((batch_size, seq_len, *image_size, channels_in))
@@ -159,13 +158,13 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 6
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, return_carry=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), return_carry=True)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
     ys: jnp.ndarray
     (carry, ys), variables = rnn.init_with_output(jax.random.PRNGKey(0), xs)
 
-    cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), (batch_size,), channels_out)
+    cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), xs[:, 0])
     cell_params = variables['params']['cell']
 
     for i in range(seq_len):
@@ -186,13 +185,13 @@ class RNNTest(absltest.TestCase):
       jnp.arange(seq_len), 'time -> batch time', batch=batch_size)
     segmentation_mask = (segmentation_mask < seq_lengths[:, None]).astype(jnp.int32)
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, return_carry=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), return_carry=True)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
     ys: jnp.ndarray
     (carry, ys), variables = rnn.init_with_output(jax.random.PRNGKey(0), xs, segmentation_mask=segmentation_mask)
 
-    cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), (batch_size,), channels_out)
+    cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), xs[:, 0])
     cell_params = variables['params']['cell']
     carries = []
 
@@ -212,7 +211,7 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 6
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, return_carry=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), return_carry=True)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
     ys: jnp.ndarray
@@ -221,7 +220,7 @@ class RNNTest(absltest.TestCase):
     cell_params = variables['params']['cell']
 
     for batch_idx in range(batch_size):
-      cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), (1,), channels_out)
+      cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), xs[:1, 0])
 
       for i in range(seq_len):
         cell_carry, y = rnn.cell.apply({'params': cell_params}, cell_carry, xs[batch_idx, i, :][None])
@@ -236,20 +235,20 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 6
 
-    cell = nn.LSTMCell()
+    cell = nn.LSTMCell(channels_out)
     rnn = nn.scan(nn.LSTMCell, in_axes=1, out_axes=1,
                    variable_broadcast='params',
-                   split_rngs={'params': False})()
+                   split_rngs={'params': False})(channels_out)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
-    carry = rnn.initialize_carry(jax.random.PRNGKey(0), (batch_size,), channels_out)
+    carry = rnn.initialize_carry(jax.random.PRNGKey(0), xs[:, 0])
     ys: jnp.ndarray
     (carry, ys), variables = rnn.init_with_output(jax.random.PRNGKey(0), carry, xs)
 
     cell_params = variables['params']
 
     for batch_idx in range(batch_size):
-      cell_carry = cell.initialize_carry(jax.random.PRNGKey(0), (1,), channels_out)
+      cell_carry = cell.initialize_carry(jax.random.PRNGKey(0), xs[:1, 0])
 
       for i in range(seq_len):
         cell_carry, y = cell.apply({'params': cell_params}, cell_carry, xs[batch_idx:batch_idx+1, i, :])
@@ -265,8 +264,8 @@ class RNNTest(absltest.TestCase):
     channels_out = 6
 
     xs = jax.random.uniform(jax.random.PRNGKey(0), (batch_size, seq_len, channels_in))
-    cell = nn.LSTMCell()
-    carry = cell.initialize_carry(jax.random.PRNGKey(0), (batch_size,), channels_out)
+    cell = nn.LSTMCell(channels_out)
+    carry = cell.initialize_carry(jax.random.PRNGKey(0), xs[:, 0])
     variables = cell.init(jax.random.PRNGKey(0), carry, xs[:, 0])
     cell_params = variables['params']
 
@@ -277,7 +276,7 @@ class RNNTest(absltest.TestCase):
     carry, ys = jax.lax.scan(scan_fn, carry, xs.swapaxes(0, 1))
     ys = ys.swapaxes(0, 1)
 
-    cell_carry = cell.initialize_carry(jax.random.PRNGKey(0), (batch_size,), channels_out)
+    cell_carry = cell.initialize_carry(jax.random.PRNGKey(0), xs[:, 0])
 
     for i in range(seq_len):
       cell_carry, y = cell.apply({'params': cell_params}, cell_carry, xs[:, i, :])
@@ -291,7 +290,7 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 6
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, return_carry=True, reverse=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), return_carry=True, reverse=True)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
     ys: jnp.ndarray
@@ -300,7 +299,7 @@ class RNNTest(absltest.TestCase):
     cell_params = variables['params']['cell']
 
     for batch_idx in range(batch_size):
-      cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), (1,), channels_out)
+      cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), xs[:1, 0])
 
       for i in range(seq_len):
         cell_carry, y = rnn.cell.apply({'params': cell_params}, cell_carry, xs[batch_idx, seq_len - i - 1, :][None])
@@ -315,7 +314,7 @@ class RNNTest(absltest.TestCase):
     channels_in = 5
     channels_out = 6
 
-    rnn = nn.RNN(nn.LSTMCell(), channels_out, return_carry=True, reverse=True, keep_order=True)
+    rnn = nn.RNN(nn.LSTMCell(channels_out), return_carry=True, reverse=True, keep_order=True)
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
     ys: jnp.ndarray
@@ -324,7 +323,7 @@ class RNNTest(absltest.TestCase):
     cell_params = variables['params']['cell']
 
     for batch_idx in range(batch_size):
-      cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), (1,), channels_out)
+      cell_carry = rnn.cell.initialize_carry(jax.random.PRNGKey(0), xs[:1, 0])
 
       for i in range(seq_len):
         cell_carry, y = rnn.cell.apply({'params': cell_params}, cell_carry, xs[batch_idx, seq_len - i - 1, :][None])
@@ -394,8 +393,8 @@ class BidirectionalTest(absltest.TestCase):
     channels_out = 6
 
     bdirectional = nn.Bidirectional(
-      nn.RNN(nn.LSTMCell(), channels_out),
-      nn.RNN(nn.LSTMCell(), channels_out)
+      nn.RNN(nn.LSTMCell(channels_out)),
+      nn.RNN(nn.LSTMCell(channels_out))
     )
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
@@ -410,10 +409,10 @@ class BidirectionalTest(absltest.TestCase):
     channels_in = 5
     channels_out = 6
 
-    cell = nn.LSTMCell()
+    cell = nn.LSTMCell(channels_out)
     bdirectional = nn.Bidirectional(
-      nn.RNN(cell, channels_out),
-      nn.RNN(cell, channels_out)
+      nn.RNN(cell),
+      nn.RNN(cell)
     )
 
     xs = jnp.ones((batch_size, seq_len, channels_in))
@@ -429,8 +428,8 @@ class BidirectionalTest(absltest.TestCase):
     channels_out = 6
 
     bdirectional = nn.Bidirectional(
-      nn.RNN(nn.LSTMCell(), channels_out),
-      nn.RNN(nn.LSTMCell(), channels_out),
+      nn.RNN(nn.LSTMCell(channels_out)),
+      nn.RNN(nn.LSTMCell(channels_out)),
       merge_fn=lambda x, y: x + y
     )
 
@@ -447,8 +446,8 @@ class BidirectionalTest(absltest.TestCase):
     channels_out = 6
 
     bdirectional = nn.Bidirectional(
-      nn.RNN(nn.LSTMCell(), channels_out),
-      nn.RNN(nn.LSTMCell(), channels_out),
+      nn.RNN(nn.LSTMCell(channels_out)),
+      nn.RNN(nn.LSTMCell(channels_out)),
       return_carry=True
     )
 

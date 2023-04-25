@@ -772,14 +772,14 @@ def scan(target: Target,
     ...
     ...   @nn.compact
     ...   def __call__(self, x):
-    ...     batch_size = x.shape[0]
-    ...     ScanLSTMCell = nn.scan(
+    ...     ScanLSTM = nn.scan(
     ...       nn.LSTMCell, variable_broadcast="params",
     ...       split_rngs={"params": False}, in_axes=1, out_axes=1)
     ...
-    ...     carry = nn.LSTMCell.initialize_carry(
-    ...       jax.random.PRNGKey(0), (batch_size,), self.features)
-    ...     carry, x = ScanLSTMCell()(carry, x)
+    ...     lstm = ScanLSTM(self.features)
+    ...     sample_input =  x[:, 0]
+    ...     carry = lstm.initialize_carry(jax.random.PRNGKey(0), sample_input)
+    ...     carry, x = lstm(carry, x)
     ...     return x
     ...
     >>> x = jnp.ones((4, 12, 7))

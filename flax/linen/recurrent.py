@@ -31,7 +31,7 @@ from flax.linen.linear import Conv
 from flax.linen.linear import default_kernel_init
 from flax.linen.linear import Dense
 from flax.linen.linear import PrecisionLike
-from flax.linen.module import compact
+from flax.linen.module import compact, nowrap
 from flax.linen.module import Module
 from jax import numpy as jnp
 from jax import random
@@ -42,7 +42,7 @@ from flax.linen import transforms
 import jax
 
 A = TypeVar('A')
-PRNGKey = Any
+PRNGKey = jax.random.KeyArray
 Shape = Tuple[int, ...]
 Dtype = Any  # this could be a real type?
 Array = jax.Array
@@ -54,18 +54,22 @@ Output = Any
 class RNNCellBase(Module):
   """RNN cell base class."""
 
-  @staticmethod
-  def initialize_carry(rng, batch_dims, size, init_fn=initializers.zeros_init()):
+  @nowrap
+  def initialize_carry(self, rng: PRNGKey, sample_input: Array) -> Carry:
     """Initialize the RNN cell carry.
 
     Args:
       rng: random number generator passed to the init_fn.
-      batch_dims: a tuple providing the shape of the batch dimensions.
-      size: the size or number of features of the memory.
-      init_fn: initializer function for the carry.
+      sample_input: a sample input to the RNN cell (without the time dimension)
     Returns:
       An initialized carry for the given RNN cell.
     """
+    raise NotImplementedError
+
+
+  @property
+  def time_axis(self) -> int:
+    """Returns the time axis of the RNN cell."""
     raise NotImplementedError
 
 
@@ -88,6 +92,7 @@ class LSTMCell(RNNCellBase):
   the memory.
 
   Attributes:
+    features: number of output features.
     gate_fn: activation function used for gates (default: sigmoid)
     activation_fn: activation function used for output and memory update
       (default: tanh).
@@ -99,13 +104,15 @@ class LSTMCell(RNNCellBase):
     dtype: the dtype of the computation (default: infer from inputs and params).
     param_dtype: the dtype passed to parameter initializers (default: float32).
   """
+  features: int
   gate_fn: Callable[..., Any] = sigmoid
   activation_fn: Callable[..., Any] = tanh
-  kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = default_kernel_init
-  recurrent_kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = initializers.orthogonal()
-  bias_init: Callable[[PRNGKey, Shape, Dtype], Array] = initializers.zeros_init()
+  kernel_init: initializers.Initializer = default_kernel_init
+  recurrent_kernel_init: initializers.Initializer = initializers.orthogonal()
+  bias_init: initializers.Initializer = initializers.zeros_init()
   dtype: Optional[Dtype] = None
   param_dtype: Dtype = jnp.float32
+  carry_init: initializers.Initializer = initializers.zeros_init()
 
   @compact
   def __call__(self, carry, inputs):
@@ -144,21 +151,27 @@ class LSTMCell(RNNCellBase):
     new_h = o * self.activation_fn(new_c)
     return (new_c, new_h), new_h
 
-  @staticmethod
-  def initialize_carry(rng, batch_dims, size, init_fn=initializers.zeros_init()):
+  @nowrap
+  def initialize_carry(
+      self, rng: PRNGKey, sample_input: Array) -> Tuple[Array, Array]:
     """Initialize the RNN cell carry.
 
     Args:
       rng: random number generator passed to the init_fn.
-      batch_dims: a tuple providing the shape of the batch dimensions.
-      size: the size or number of features of the memory.
-      init_fn: initializer function for the carry.
+      sample_input: a sample input to the RNN cell (without the time dimension)
     Returns:
       An initialized carry for the given RNN cell.
     """
+    batch_dims = sample_input.shape[:-1]
     key1, key2 = random.split(rng)
-    mem_shape = batch_dims + (size,)
-    return init_fn(key1, mem_shape), init_fn(key2, mem_shape)
+    mem_shape = batch_dims + (self.features,)
+    c = self.carry_init(key1, mem_shape)
+    h = self.carry_init(key2, mem_shape)
+    return (c, h)
+
+  @property
+  def time_axis(self) -> int:
+    return -2
 
 
 class DenseParams(Module):
@@ -218,13 +231,15 @@ class OptimizedLSTMCell(RNNCellBase):
     dtype: the dtype of the computation (default: infer from inputs and params).
     param_dtype: the dtype passed to parameter initializers (default: float32).
   """
+  features: int
   gate_fn: Callable[..., Any] = sigmoid
   activation_fn: Callable[..., Any] = tanh
-  kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = default_kernel_init
-  recurrent_kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = initializers.orthogonal()
-  bias_init: Callable[[PRNGKey, Shape, Dtype], Array] = initializers.zeros_init()
+  kernel_init: initializers.Initializer = default_kernel_init
+  recurrent_kernel_init: initializers.Initializer = initializers.orthogonal()
+  bias_init: initializers.Initializer = initializers.zeros_init()
   dtype: Optional[Dtype] = None
   param_dtype: Dtype = jnp.float32
+  carry_init: initializers.Initializer = initializers.zeros_init()
 
   @compact
   def __call__(self, carry: Tuple[Array, Array],
@@ -298,8 +313,9 @@ class OptimizedLSTMCell(RNNCellBase):
     new_h = o * self.activation_fn(new_c)
     return (new_c, new_h), new_h
 
-  @staticmethod
-  def initialize_carry(rng, batch_dims, size, init_fn=initializers.zeros_init()):
+  @nowrap
+  def initialize_carry(
+      self, rng: PRNGKey, sample_input: Array) -> Tuple[Array, Array]:
     """Initialize the RNN cell carry.
 
     Args:
@@ -311,10 +327,16 @@ class OptimizedLSTMCell(RNNCellBase):
     Returns:
       An initialized carry for the given RNN cell.
     """
+    batch_dims = sample_input.shape[:-1]
     key1, key2 = random.split(rng)
-    mem_shape = batch_dims + (size,)
-    return init_fn(key1, mem_shape), init_fn(key2, mem_shape)
+    mem_shape = batch_dims + (self.features,)
+    c = self.carry_init(key1, mem_shape, self.param_dtype)
+    h = self.carry_init(key2, mem_shape, self.param_dtype)
+    return c, h
 
+  @property
+  def time_axis(self) -> int:
+    return -2
 
 class GRUCell(RNNCellBase):
   r"""GRU cell.
@@ -344,15 +366,15 @@ class GRUCell(RNNCellBase):
     dtype: the dtype of the computation (default: None).
     param_dtype: the dtype passed to parameter initializers (default: float32).
   """
+  features: int
   gate_fn: Callable[..., Any] = sigmoid
   activation_fn: Callable[..., Any] = tanh
-  kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = (
-      default_kernel_init)
-  recurrent_kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = (
-      initializers.orthogonal())
-  bias_init: Callable[[PRNGKey, Shape, Dtype], Array] = initializers.zeros_init()
+  kernel_init: initializers.Initializer = default_kernel_init
+  recurrent_kernel_init: initializers.Initializer = initializers.orthogonal()
+  bias_init: initializers.Initializer = initializers.zeros_init()
   dtype: Optional[Dtype] = None
   param_dtype: Dtype = jnp.float32
+  carry_init: initializers.Initializer = initializers.zeros_init()
 
   @compact
   def __call__(self, carry, inputs):
@@ -392,8 +414,8 @@ class GRUCell(RNNCellBase):
     new_h = (1. - z) * n + z * h
     return new_h, new_h
 
-  @staticmethod
-  def initialize_carry(rng, batch_dims, size, init_fn=initializers.zeros_init()):
+  @nowrap
+  def initialize_carry(self, rng: PRNGKey, sample_input: Array):
     """Initialize the RNN cell carry.
 
     Args:
@@ -404,8 +426,13 @@ class GRUCell(RNNCellBase):
     Returns:
       An initialized carry for the given RNN cell.
     """
-    mem_shape = batch_dims + (size,)
-    return init_fn(rng, mem_shape)
+    batch_dims = sample_input.shape[:-1]
+    mem_shape = batch_dims + (self.features,)
+    return self.carry_init(rng, mem_shape)
+
+  @property
+  def time_axis(self) -> int:
+    return -2
 
 
 class ConvLSTMCell(RNNCellBase):
@@ -456,6 +483,7 @@ class ConvLSTMCell(RNNCellBase):
   use_bias: bool = True
   dtype: Optional[Dtype] = None
   param_dtype: Dtype = jnp.float32
+  carry_init: initializers.Initializer = initializers.zeros_init()
 
   @compact
   def __call__(self, carry, inputs):
@@ -497,8 +525,8 @@ class ConvLSTMCell(RNNCellBase):
     new_h = sigmoid(o) * jnp.tanh(new_c)
     return (new_c, new_h), new_h
 
-  @staticmethod
-  def initialize_carry(rng, batch_dims, size, init_fn=initializers.zeros_init()):
+  @nowrap
+  def initialize_carry(self, rng: PRNGKey, sample_input: Array):
     """Initialize the RNN cell carry.
 
     Args:
@@ -509,9 +537,19 @@ class ConvLSTMCell(RNNCellBase):
     Returns:
       An initialized carry for the given RNN cell.
     """
+    # (*batch_dims, *signal_dims, features)
+    num_kernel_dims = len(self.kernel_size)
+    signal_dims = sample_input.shape[-num_kernel_dims-1:-1]
+    batch_dims = sample_input.shape[:-num_kernel_dims-1]
     key1, key2 = random.split(rng)
-    mem_shape = batch_dims + size
-    return init_fn(key1, mem_shape), init_fn(key2, mem_shape)
+    mem_shape = batch_dims + signal_dims + (self.features,)
+    c = self.carry_init(key1, mem_shape)
+    h = self.carry_init(key2, mem_shape)
+    return c, h
+
+  @property
+  def time_axis(self) -> int:
+    return -len(self.kernel_size) - 2
 
 class RNN(Module):
   """The ``RNN`` module takes any :class:`RNNCellBase` instance and applies it over a sequence
@@ -624,7 +662,6 @@ class RNN(Module):
       such that its values remain the same at each step. This argument is forwarded to `nn.scan`.
   """
   cell: RNNCellBase
-  cell_size: Union[int, Tuple[int, ...]]
   time_major: bool = False
   return_carry: bool = False
   reverse: bool = False
@@ -690,10 +727,15 @@ class RNN(Module):
 
     # Infer the number of batch dimensions from the input shape.
     # Cells like ConvLSTM have additional spatial dimensions.
-    num_features_dims = 1 if isinstance(self.cell_size, int) else len(self.cell_size)
-    time_axis = 0 if time_major else inputs.ndim - num_features_dims - 1
+    time_axis = 0 if time_major else self.cell.time_axis
+
+    # make time_axis positive
+    if time_axis < 0:
+      time_axis += inputs.ndim
+
     if time_major:
-      batch_dims = inputs.shape[1:-num_features_dims]
+      # we add +1 because we moved the time axis to the front
+      batch_dims = inputs.shape[1:self.cell.time_axis+1]
     else:
       batch_dims = inputs.shape[:time_axis]
 
@@ -708,8 +750,10 @@ class RNN(Module):
     if initial_carry is None:
       if init_key is None:
         init_key = random.PRNGKey(0)
-      carry = self.cell.initialize_carry(
-        init_key, batch_dims=batch_dims, size=self.cell_size)
+
+      sample_input = jax.lax.dynamic_index_in_dim(
+        inputs, index=0, axis=time_axis, keepdims=False)
+      carry = self.cell.initialize_carry(init_key, sample_input)
     else:
       carry = initial_carry
 

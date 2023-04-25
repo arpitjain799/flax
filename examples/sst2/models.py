@@ -161,21 +161,28 @@ class Embedder(nn.Module):
 
 class SimpleLSTM(nn.Module):
   """A simple unidirectional LSTM."""
+  hidden_size: int
+
+  def setup(self) -> None:
+    self.lstm_cell = nn.OptimizedLSTMCell(self.hidden_size)
 
   @functools.partial(
       nn.transforms.scan,
       variable_broadcast='params',
       in_axes=1, out_axes=1,
       split_rngs={'params': False})
-  @nn.compact
-  def __call__(self, carry, x):
-    return nn.OptimizedLSTMCell()(carry, x)
 
-  @staticmethod
-  def initialize_carry(batch_dims, hidden_size):
+  def __call__(self, carry, x):
+    return self.lstm_cell(carry, x)
+
+  @nn.nowrap
+  def initialize_carry(self, sample_input):
     # Use fixed random key since default state init fn is just zeros.
-    return nn.OptimizedLSTMCell.initialize_carry(
-        jax.random.PRNGKey(0), batch_dims, hidden_size)
+    if self.scope is None:
+      return nn.OptimizedLSTMCell(self.hidden_size).initialize_carry(
+          jax.random.PRNGKey(0), sample_input)
+    return self.lstm_cell.initialize_carry(
+        jax.random.PRNGKey(0), sample_input)
 
 
 class SimpleBiLSTM(nn.Module):
@@ -183,19 +190,17 @@ class SimpleBiLSTM(nn.Module):
   hidden_size: int
 
   def setup(self):
-    self.forward_lstm = SimpleLSTM()
-    self.backward_lstm = SimpleLSTM()
+    self.forward_lstm = SimpleLSTM(self.hidden_size)
+    self.backward_lstm = SimpleLSTM(self.hidden_size)
 
   def __call__(self, embedded_inputs, lengths):
-    batch_size = embedded_inputs.shape[0]
-
     # Forward LSTM.
-    initial_state = SimpleLSTM.initialize_carry((batch_size,), self.hidden_size)
+    initial_state = self.forward_lstm.initialize_carry(embedded_inputs[:, 0])
     _, forward_outputs = self.forward_lstm(initial_state, embedded_inputs)
 
     # Backward LSTM.
     reversed_inputs = flip_sequences(embedded_inputs, lengths)
-    initial_state = SimpleLSTM.initialize_carry((batch_size,), self.hidden_size)
+    initial_state = self.backward_lstm.initialize_carry(reversed_inputs[:, 0])
     _, backward_outputs = self.backward_lstm(initial_state, reversed_inputs)
     backward_outputs = flip_sequences(backward_outputs, lengths)
 
